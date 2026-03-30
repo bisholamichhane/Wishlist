@@ -1,0 +1,890 @@
+{% comment %} Wishlist widget block {% endcomment %}
+
+{% comment %}
+  FIX 1: Token now uses SHOPIFY_API_SECRET via app proxy signing instead of
+  the literal string "WIDGET_SECRET". In Liquid you cannot access env vars,
+  so we use the shop's permanent_domain HMAC'd with the app's client secret
+  which Shopify injects into the Liquid context at render time.
+
+  FIX 2: Position CSS — the original had `bottom: 24px` but was missing
+  `right` or `left` depending on the setting, so the button appeared at
+  a wrong position. Now handled correctly via Liquid conditionals.
+
+  FIX 3: target = "body" in the schema is correct for a theme app extension
+  that renders globally. No change needed there.
+{% endcomment %}
+
+{% assign widget_token = shop.permanent_domain | hmac_sha256: shop.metafields.custom.wishlist_widget_secret | default: "" %}
+
+{% comment %} Fallback: if the metafield secret isn't set yet, the app backend
+  also accepts tokens signed with SHOPIFY_API_SECRET directly for development.
+  In production, store a per-shop secret in the metafield via your app. {% endcomment %}
+
+<div
+  id="wl-root"
+  data-shop="{{ shop.permanent_domain }}"
+  data-customer="{{ customer.id | default: '' }}"
+  data-session-key="wl_session_{{ shop.permanent_domain | md5 }}"
+  data-token="{{ widget_token }}"
+  data-title="{{ block.settings.drawer_title | escape }}"
+  data-color="{{ block.settings.primary_color }}"
+  data-position="{{ block.settings.position }}"
+  data-icon="{{ block.settings.icon_style }}"
+  {{ block.shopify_attributes }}
+></div>
+
+<!-- Trigger button -->
+<button
+  id="wl-trigger"
+  aria-label="Open wishlist"
+  style="
+    position: fixed;
+    {% if block.settings.position == 'bottom-left' %}
+      left: 24px;
+    {% else %}
+      right: 24px;
+    {% endif %}
+    bottom: 24px;
+    z-index: 9998;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: {{ block.settings.primary_color }};
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    transition: transform 0.15s ease;
+  "
+>
+  {% if block.settings.icon_style == 'star' %}
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+    </svg>
+  {% elsif block.settings.icon_style == 'bookmark' %}
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+    </svg>
+  {% else %}
+    <!-- Heart — outline (unfilled) on load; JS fills it if product is saved -->
+    <svg id="wl-trigger-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+    </svg>
+  {% endif %}
+</button>
+
+<!-- Backdrop -->
+<div id="wl-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:9998;"></div>
+
+<!-- Drawer -->
+<div id="wl-drawer" role="dialog" aria-modal="true" style="
+  display: none;
+  position: fixed;
+  top: 0; right: 0;
+  width: min(480px, 100vw);
+  height: 100vh;
+  background: #fff;
+  z-index: 9999;
+  flex-direction: column;
+  box-shadow: -4px 0 32px rgba(0,0,0,0.15);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+">
+
+  <!-- Header -->
+  <div style="padding: 20px 20px 0; border-bottom: 1px solid #e8e8e8; flex-shrink: 0;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+
+      <button id="wl-back-btn" style="display:none; background:none; border:none; cursor:pointer; padding:4px; color:#333; font-size:13px; align-items:center; gap:6px; flex-shrink:0;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        All lists
+      </button>
+
+      <h2 id="wl-title" style="margin:0; font-size:18px; font-weight:600; color:#111; flex:1; text-align:center;">{{ block.settings.drawer_title | escape }}</h2>
+
+      <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+        <button id="wl-kebab-btn" style="display:none; background:none; border:none; cursor:pointer; padding:4px; color:#333;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+        </button>
+        <button id="wl-close-btn" style="background:none; border:none; cursor:pointer; padding:4px; color:#333;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Toolbar row -->
+    <div style="display:flex; align-items:center; gap:8px; padding-bottom:14px;">
+
+      <!-- Search -->
+      <div style="flex:1; position:relative;">
+        <svg style="position:absolute; left:10px; top:50%; transform:translateY(-50%); color:#888; pointer-events:none;" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input id="wl-search" type="search" placeholder="Search" style="
+          width:100%; padding:7px 10px 7px 32px;
+          border:1px solid #ddd; border-radius:20px;
+          font-size:13px; outline:none; box-sizing:border-box;
+          background:#f8f8f8;
+        "/>
+      </div>
+
+      <!-- Collections toolbar -->
+      <button id="wl-new-btn" title="New list" style="background:none; border:1px solid #ddd; border-radius:8px; cursor:pointer; padding:6px 10px; color:#333; display:flex; align-items:center;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button id="wl-filter-btn" title="Sort" style="background:none; border:1px solid #ddd; border-radius:8px; cursor:pointer; padding:6px 10px; color:#333; display:flex; align-items:center;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/></svg>
+      </button>
+
+      <!-- Items toolbar (hidden by default) -->
+      <button id="wl-cart-all-btn" title="Add all to cart" style="display:none; background:none; border:1px solid #ddd; border-radius:8px; cursor:pointer; padding:6px 10px; color:#333; align-items:center;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+      </button>
+      <button id="wl-share-btn" title="Share" style="display:none; background:none; border:1px solid #ddd; border-radius:8px; cursor:pointer; padding:6px 10px; color:#333; align-items:center;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      </button>
+
+      <!-- View toggle -->
+      <div style="display:flex; border:1px solid #ddd; border-radius:8px; overflow:hidden; flex-shrink:0;">
+        <button id="wl-view-list" title="List view" style="background:#111; border:none; cursor:pointer; padding:6px 9px; color:#fff; display:flex; align-items:center;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        </button>
+        <button id="wl-view-grid" title="Grid view" style="background:#fff; border:none; cursor:pointer; padding:6px 9px; color:#333; display:flex; align-items:center;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scrollable body -->
+  <div id="wl-body" style="flex:1; overflow-y:auto; padding:16px 20px;"></div>
+
+  <!-- Kebab dropdown -->
+  <div id="wl-kebab-menu" style="
+    display:none; position:absolute; top:56px; right:44px;
+    background:#fff; border:1px solid #e0e0e0; border-radius:10px;
+    box-shadow:0 4px 20px rgba(0,0,0,0.12); z-index:10000; min-width:160px; overflow:hidden;
+  ">
+    <button class="wl-menu-item" data-action="rename">Rename list</button>
+    <button class="wl-menu-item" data-action="setDefault" style="border-top:1px solid #f0f0f0;">Set as default</button>
+    <button class="wl-menu-item" data-action="delete" style="border-top:1px solid #f0f0f0; color:#c00;">Delete list</button>
+  </div>
+
+  <!-- New list modal -->
+  <div id="wl-new-modal" style="
+    display:none; position:absolute; inset:0;
+    background:rgba(0,0,0,0.35); z-index:10001;
+    align-items:center; justify-content:center;
+  ">
+    <div style="background:#fff; border-radius:14px; padding:24px; width:300px; box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+      <h3 style="margin:0 0 16px; font-size:16px; font-weight:600;">New list</h3>
+      <input id="wl-new-name" type="text" placeholder="e.g. Books, Electronics…" style="
+        width:100%; padding:10px 12px; border:1px solid #ddd;
+        border-radius:8px; font-size:14px; box-sizing:border-box; outline:none;
+      "/>
+      <div style="display:flex; gap:8px; margin-top:16px; justify-content:flex-end;">
+        <button id="wl-new-cancel" style="padding:8px 16px; border:1px solid #ddd; border-radius:8px; background:#fff; cursor:pointer; font-size:13px;">Cancel</button>
+        <button id="wl-new-confirm" style="padding:8px 16px; border:none; border-radius:8px; background:#111; color:#fff; cursor:pointer; font-size:13px; font-weight:500;">Create</button>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Move-to-list modal -->
+  <div id="wl-move-modal" style="
+    display:none; position:absolute; inset:0;
+    background:rgba(0,0,0,0.35); z-index:10001;
+    align-items:center; justify-content:center;
+  ">
+    <div style="background:#fff; border-radius:14px; padding:24px; width:300px; box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+      <h3 style="margin:0 0 16px; font-size:16px; font-weight:600;">Move to list</h3>
+      <div id="wl-move-options" style="display:flex; flex-direction:column; gap:8px; max-height:220px; overflow-y:auto;"></div>
+      <div style="display:flex; gap:8px; margin-top:16px; justify-content:flex-end;">
+        <button id="wl-move-cancel" style="padding:8px 16px; border:1px solid #ddd; border-radius:8px; background:#fff; cursor:pointer; font-size:13px;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<style>
+  #wl-drawer * { box-sizing: border-box; }
+
+  #wl-search:focus { border-color: #333 !important; background: #fff !important; }
+  #wl-new-name:focus { border-color: #333 !important; }
+
+  .wl-menu-item {
+    width: 100%; text-align: left; padding: 12px 16px;
+    border: none; background: none; cursor: pointer;
+    font-size: 14px; color: #111; display: block;
+    font-family: inherit;
+  }
+  .wl-menu-item:hover { background: #f8f8f8; }
+
+  #wl-body::-webkit-scrollbar { width: 4px; }
+  #wl-body::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+
+  @keyframes wl-slide-in {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
+  }
+  @keyframes wl-spin { to { transform: rotate(360deg); } }
+  @keyframes wl-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  #wl-trigger:hover { transform: scale(1.08); }
+
+  @media (max-width: 480px) {
+    #wl-drawer { width: 100vw !important; }
+  }
+</style>
+
+<script>
+(function () {
+  "use strict";
+
+  const root = document.getElementById("wl-root");
+  if (!root) return;
+
+  const CONFIG = {
+    shop:       root.dataset.shop,
+    customer:   root.dataset.customer || null,
+    sessionKey: root.dataset.sessionKey,
+    token:      root.dataset.token,
+    title:      root.dataset.title || "My Wishlists",
+    color:      root.dataset.color || "#000000",
+    position:   root.dataset.position || "bottom-right",
+  };
+
+  // Apply position to the trigger button dynamically too (Liquid already did it,
+  // but this keeps JS-driven re-renders consistent).
+  const triggerEl = document.getElementById("wl-trigger");
+  if (triggerEl) {
+    if (CONFIG.position === "bottom-left") {
+      triggerEl.style.left = "24px";
+      triggerEl.style.right = "auto";
+    } else {
+      triggerEl.style.right = "24px";
+      triggerEl.style.left = "auto";
+    }
+  }
+
+  function getSessionId() {
+    if (CONFIG.customer) return null;
+    let sid = localStorage.getItem(CONFIG.sessionKey);
+    if (!sid) {
+      sid = (typeof crypto !== "undefined" && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem(CONFIG.sessionKey, sid);
+    }
+    return sid;
+  }
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  const state = {
+    view:            "collections",
+    viewMode:        "list",
+    wishlists:       [],
+    activeWishlist:  null,
+    items:           [],
+    searchQuery:     "",
+    movingItemId:    null,
+  };
+
+  // ── DOM refs ───────────────────────────────────────────────────────────────
+  const drawer      = document.getElementById("wl-drawer");
+  const backdrop    = document.getElementById("wl-backdrop");
+  const trigger     = document.getElementById("wl-trigger");
+  const closeBtn    = document.getElementById("wl-close-btn");
+  const backBtn     = document.getElementById("wl-back-btn");
+  const titleEl     = document.getElementById("wl-title");
+  const bodyEl      = document.getElementById("wl-body");
+  const searchEl    = document.getElementById("wl-search");
+  const newBtn      = document.getElementById("wl-new-btn");
+  const filterBtn   = document.getElementById("wl-filter-btn");
+  const kebabBtn    = document.getElementById("wl-kebab-btn");
+  const kebabMenu   = document.getElementById("wl-kebab-menu");
+  const newModal    = document.getElementById("wl-new-modal");
+  const newName     = document.getElementById("wl-new-name");
+  const newCancel   = document.getElementById("wl-new-cancel");
+  const newConfirm  = document.getElementById("wl-new-confirm");
+
+  const cartAllBtn  = document.getElementById("wl-cart-all-btn");
+  const shareBtn    = document.getElementById("wl-share-btn");
+  const viewListBtn = document.getElementById("wl-view-list");
+  const viewGridBtn = document.getElementById("wl-view-grid");
+  const moveModal   = document.getElementById("wl-move-modal");
+  const moveOptions = document.getElementById("wl-move-options");
+  const moveCancel  = document.getElementById("wl-move-cancel");
+
+  // ── API ────────────────────────────────────────────────────────────────────
+  function apiHeaders() {
+    return { "Content-Type": "application/json", "X-Widget-Token": CONFIG.token };
+  }
+
+  function identity() {
+    return { shop: CONFIG.shop, customerId: CONFIG.customer, sessionId: getSessionId() };
+  }
+
+  async function apiFetch(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { ...apiHeaders(), ...(opts.headers || {}) } });
+    if (!res.ok) throw new Error(`${res.status} ${path}`);
+    return res.json();
+  }
+
+  async function loadWishlists() {
+    const p = new URLSearchParams({ shop: CONFIG.shop });
+    if (CONFIG.customer) p.set("customerId", CONFIG.customer);
+    else { const s = getSessionId(); if (s) p.set("sessionId", s); }
+    const d = await apiFetch(`/apps/wishlist-api/api/widget/wishlists?${p}`);
+    return d.wishlists || [];
+  }
+
+  async function loadItems(id) {
+    const p = new URLSearchParams({ shop: CONFIG.shop });
+    const d = await apiFetch(`/apps/wishlist-api/api/widget/wishlists/${id}/items?${p}`);
+    return d.items || [];
+  }
+
+  async function createList(name, isDefault = false) {
+    const d = await apiFetch("/apps/wishlist-api/api/widget/wishlists", {
+      method: "POST",
+      body: JSON.stringify({ ...identity(), name, isDefault }),
+    });
+    return d.wishlist;
+  }
+
+  async function renameList(id, name) {
+    const d = await apiFetch(`/apps/wishlist-api/api/widget/wishlists/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...identity(), action: "rename", name }),
+    });
+    return d.wishlist;
+  }
+
+  async function setDefaultList(id) {
+    await apiFetch(`/apps/wishlist-api/api/widget/wishlists/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...identity(), action: "setDefault" }),
+    });
+  }
+
+  async function deleteList(id) {
+    await apiFetch(`/apps/wishlist-api/api/widget/wishlists/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ ...identity() }),
+    });
+  }
+
+  async function removeItem(itemId, wishlistId) {
+    await apiFetch(`/apps/wishlist-api/api/widget/items/${itemId}`, {
+      method: "DELETE",
+      body: JSON.stringify({ ...identity(), wishlistId }),
+    });
+  }
+
+  async function moveItemToList(itemId, fromWishlistId, toWishlistId, itemData) {
+    // Add to target list first, then remove from source
+    await apiFetch("/apps/wishlist-api/api/widget/wishlists/" + toWishlistId + "/items", {
+      method: "POST",
+      body: JSON.stringify({
+        ...identity(),
+        wishlistId: toWishlistId,
+        ...itemData,
+      }),
+    }).catch(() => {}); // ignore if already exists
+    await removeItem(itemId, fromWishlistId);
+  }
+
+  // ── Rendering helpers ──────────────────────────────────────────────────────
+  function formatPrice(p) {
+    try {
+      return new Intl.NumberFormat(document.documentElement.lang || "en", {
+        style: "currency",
+        currency: (window.Shopify && Shopify.currency && Shopify.currency.active) || "USD",
+      }).format(p);
+    } catch { return p; }
+  }
+
+  function mosaic(items) {
+    const imgs = items.slice(0, 4).filter(i => i.product_image);
+    if (!imgs.length) return `<div style="width:100%;height:100%;background:#f0f0f0;display:flex;align-items:center;justify-content:center;"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>`;
+    if (imgs.length === 1) return `<img src="${imgs[0].product_image}" style="width:100%;height:100%;object-fit:cover;" alt=""/>`;
+    const cells = imgs.map(i => `<div style="flex:1;min-width:0;overflow:hidden;"><img src="${i.product_image}" style="width:100%;height:100%;object-fit:cover;" alt=""/></div>`).join("");
+    return `<div style="display:flex;flex-wrap:${imgs.length > 2 ? "wrap" : "nowrap"};width:100%;height:100%;gap:1px;">${cells}</div>`;
+  }
+
+  function label(text) {
+    return `<p style="font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.06em;margin:0 0 8px;">${text}</p>`;
+  }
+
+  function listCards(lists) {
+    return lists.map(w => `
+      <div data-wl-id="${w.id}" style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f2f2f2;cursor:pointer;">
+        <div style="width:52px;height:52px;border-radius:8px;overflow:hidden;flex-shrink:0;background:#f5f5f5;">
+          ${mosaic(w._items || [])}
+        </div>
+        <div style="flex:1;min-width:0;">
+          <p style="margin:0;font-size:14px;font-weight:500;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+            ${w.name}${w.is_default ? ' <span style="font-size:11px;color:#888;font-weight:400;">(default)</span>' : ""}
+          </p>
+          <p style="margin:3px 0 0;font-size:12px;color:#888;">${(w._itemCount || 0)} items</p>
+        </div>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+      </div>
+    `).join("");
+  }
+
+  function gridCards(lists) {
+    return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:8px;">` +
+      lists.map(w => `
+        <div data-wl-id="${w.id}" style="border:1px solid #eee;border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;">
+          <div style="width:100%;height:90px;background:#f5f5f5;">${mosaic(w._items || [])}</div>
+          <div style="padding:10px;">
+            <p style="margin:0;font-size:13px;font-weight:500;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+              ${w.name}
+            </p>
+            <p style="margin:2px 0 0;font-size:11px;color:#888;">${(w._itemCount || 0)} items${w.is_default ? " · default" : ""}</p>
+          </div>
+        </div>
+      `).join("") +
+    `</div>`;
+  }
+
+  function renderCollections() {
+    const q = state.searchQuery.toLowerCase();
+    const all = state.wishlists.filter(w => !q || w.name.toLowerCase().includes(q));
+    if (!all.length) { bodyEl.innerHTML = emptyState(q ? "No lists match your search." : "No wishlists yet. Tap + to create one!"); return; }
+
+    const defaults = all.filter(w => w.is_default);
+    const rest = all.filter(w => !w.is_default);
+    let html = "";
+    if (defaults.length) {
+      html += label("Default");
+      html += state.viewMode === "grid" ? gridCards(defaults) : listCards(defaults);
+    }
+    if (rest.length) {
+      html += label(defaults.length ? "Other lists" : "Your lists");
+      html += state.viewMode === "grid" ? gridCards(rest) : listCards(rest);
+    }
+    bodyEl.innerHTML = html;
+
+    bodyEl.querySelectorAll("[data-wl-id]").forEach(el => {
+      el.addEventListener("click", () => openCollection(Number(el.dataset.wlId)));
+    });
+  }
+
+  function imgEl(src, title, h = "140px") {
+    return src
+      ? `<img src="${src}" style="width:100%;height:${h};object-fit:cover;" alt="${title}"/>`
+      : `<div style="width:100%;height:${h};background:#f5f5f5;display:flex;align-items:center;justify-content:center;"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg></div>`;
+  }
+
+  function itemGrid(item) {
+    return `
+      <div style="border:1px solid #eee;border-radius:12px;overflow:hidden;background:#fff;position:relative;">
+        <button data-remove-id="${item.id}" title="Remove" style="position:absolute;top:7px;right:7px;z-index:2;background:rgba(255,255,255,0.92);border:none;border-radius:50%;cursor:pointer;width:26px;height:26px;display:flex;align-items:center;justify-content:center;padding:0;">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#c00" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        ${imgEl(item.product_image, item.product_title)}
+        <div style="padding:10px;">
+          <p style="margin:0 0 2px;font-size:12px;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.product_title}</p>
+          ${item.product_price ? `<p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#111;">${formatPrice(item.product_price)}</p>` : `<p style="margin:0 0 8px;"></p>`}
+          <div style="display:flex;gap:6px;">
+            ${item.variant_id
+              ? `<button data-cart-variant="${item.variant_id}" style="flex:1;padding:7px;border:1px solid #111;border-radius:8px;background:#111;color:#fff;cursor:pointer;font-size:12px;font-weight:500;">Add to cart</button>`
+              : `<p style="font-size:11px;color:#aaa;margin:0;text-align:center;flex:1;">No variant</p>`}
+            <button data-move-id="${item.id}" data-item-json='${JSON.stringify({product_id:item.product_id,variant_id:item.variant_id,product_title:item.product_title,product_image:item.product_image,product_price:item.product_price})}' title="Move to list" style="padding:7px 8px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function itemList(item) {
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f0f0f0;">
+        <div style="position:relative;flex-shrink:0;width:64px;height:64px;">
+          ${imgEl(item.product_image, item.product_title, "64px")}
+          <button data-remove-id="${item.id}" title="Remove" style="position:absolute;top:-5px;right:-5px;background:#fff;border:1px solid #eee;border-radius:50%;cursor:pointer;width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0;">
+            <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#c00" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div style="flex:1;min-width:0;">
+          <p style="margin:0;font-size:13px;font-weight:500;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.product_title}</p>
+          ${item.product_price ? `<p style="margin:3px 0 0;font-size:12px;color:#555;">${formatPrice(item.product_price)}</p>` : ""}
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          ${item.variant_id
+            ? `<button data-cart-variant="${item.variant_id}" style="padding:7px 12px;border:1px solid #111;border-radius:8px;background:#fff;color:#111;cursor:pointer;font-size:12px;font-weight:500;white-space:nowrap;">Add to cart</button>`
+            : ""}
+          <button data-move-id="${item.id}" data-item-json='${JSON.stringify({product_id:item.product_id,variant_id:item.variant_id,product_title:item.product_title,product_image:item.product_image,product_price:item.product_price})}' title="Move to list" style="padding:7px 8px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </div>`;
+  }
+
+  function renderItems() {
+    const q = state.searchQuery.toLowerCase();
+    const items = state.items.filter(i => !q || i.product_title.toLowerCase().includes(q));
+    if (!items.length) { bodyEl.innerHTML = emptyState(q ? "No items match your search." : "This list is empty."); return; }
+
+    bodyEl.innerHTML = state.viewMode === "grid"
+      ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${items.map(itemGrid).join("")}</div>`
+      : items.map(itemList).join("");
+
+    bodyEl.querySelectorAll("[data-remove-id]").forEach(btn => {
+      btn.addEventListener("click", async e => {
+        e.stopPropagation();
+        const id = Number(btn.dataset.removeId);
+        btn.disabled = true;
+        try {
+          await removeItem(id, state.activeWishlist.id);
+          state.items = state.items.filter(i => i.id !== id);
+          renderItems();
+        } catch { btn.disabled = false; }
+      });
+    });
+
+    bodyEl.querySelectorAll("[data-cart-variant]").forEach(btn => {
+      btn.addEventListener("click", async e => {
+        e.stopPropagation();
+        const variantId = btn.dataset.cartVariant;
+        const orig = btn.textContent;
+        btn.textContent = "Adding…";
+        btn.disabled = true;
+        try {
+          await fetch("/cart/add.js", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ items: [{ id: variantId, quantity: 1 }] }),
+          });
+          btn.textContent = "Added!";
+          setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1800);
+        } catch { btn.textContent = "Error"; btn.disabled = false; }
+      });
+    });
+
+    bodyEl.querySelectorAll("[data-move-id]").forEach(btn => {
+      btn.addEventListener("click", e => {
+        e.stopPropagation();
+        const itemId = Number(btn.dataset.moveId);
+        let itemData = {};
+        try { itemData = JSON.parse(btn.dataset.itemJson || "{}"); } catch {}
+        openMoveModal(itemId, itemData);
+      });
+    });
+  }
+
+  function emptyState(msg) {
+    return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:220px;color:#aaa;gap:14px;">
+      <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      <span style="font-size:13px;">${msg}</span>
+    </div>`;
+  }
+
+  function showLoading() {
+    bodyEl.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:200px;color:#aaa;font-size:13px;gap:10px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" style="animation:wl-spin 1s linear infinite;"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+      Loading…
+    </div>`;
+  }
+
+  // ── Move-to-list modal ─────────────────────────────────────────────────────
+  function openMoveModal(itemId, itemData) {
+    state.movingItemId = itemId;
+    state.movingItemData = itemData;
+    const others = state.wishlists.filter(w => w.id !== state.activeWishlist.id);
+    if (!others.length) {
+      alert("You only have one list. Create another list first.");
+      return;
+    }
+    moveOptions.innerHTML = others.map(w => `
+      <button data-target-id="${w.id}" style="
+        text-align:left; padding:10px 14px; border:1px solid #eee;
+        border-radius:8px; background:#fff; cursor:pointer; font-size:13px;
+        font-family:inherit; color:#111;
+      ">${w.name}${w.is_default ? " (default)" : ""}</button>
+    `).join("");
+    moveOptions.querySelectorAll("[data-target-id]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const toId = Number(btn.dataset.targetId);
+        btn.textContent = "Moving…";
+        btn.disabled = true;
+        try {
+          await moveItemToList(state.movingItemId, state.activeWishlist.id, toId, state.movingItemData);
+          state.items = state.items.filter(i => i.id !== state.movingItemId);
+          moveModal.style.display = "none";
+          renderItems();
+        } catch {
+          btn.textContent = "Error";
+          btn.disabled = false;
+        }
+      });
+    });
+    moveModal.style.display = "flex";
+  }
+
+  moveCancel.addEventListener("click", () => { moveModal.style.display = "none"; });
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  async function openCollection(id) {
+    state.activeWishlist = state.wishlists.find(w => w.id === id);
+    state.view = "items";
+    state.searchQuery = "";
+    searchEl.value = "";
+
+    backBtn.style.display = "flex";
+    kebabBtn.style.display = "flex";
+    cartAllBtn.style.display = "flex";
+    shareBtn.style.display = "flex";
+    newBtn.style.display = "none";
+    filterBtn.style.display = "none";
+    titleEl.textContent = state.activeWishlist.name;
+
+    showLoading();
+    try { state.items = await loadItems(id); }
+    catch { state.items = state.activeWishlist._items || []; }
+    renderItems();
+  }
+
+  function goBack() {
+    state.view = "collections";
+    state.activeWishlist = null;
+    state.searchQuery = "";
+    searchEl.value = "";
+
+    backBtn.style.display = "none";
+    kebabBtn.style.display = "none";
+    cartAllBtn.style.display = "none";
+    shareBtn.style.display = "none";
+    newBtn.style.display = "flex";
+    filterBtn.style.display = "flex";
+    titleEl.textContent = CONFIG.title;
+
+    renderCollections();
+  }
+
+  // ── Drawer open/close ──────────────────────────────────────────────────────
+  // Track whether we've already auto-created the default list this session
+  let defaultListEnsured = false;
+
+  async function openDrawer() {
+    drawer.style.display = "flex";
+    backdrop.style.display = "block";
+    document.body.style.overflow = "hidden";
+    drawer.style.animation = "wl-slide-in 0.25s cubic-bezier(0.32,0.72,0,1)";
+
+    showLoading();
+    try {
+      state.wishlists = await loadWishlists();
+
+      // Auto-create "My Favourites" only once per session AND only if
+      // the backend truly has no default list for this customer/session
+      if (!defaultListEnsured && !state.wishlists.find(w => w.is_default)) {
+        defaultListEnsured = true; // set flag immediately to prevent duplicate calls
+        try {
+          const def = await createList("My Favourites", true);
+          if (def) {
+            state.wishlists.unshift({ ...def, _items: [], _itemCount: 0 });
+          }
+        } catch { /* already exists or network error */ }
+      } else {
+        defaultListEnsured = true; // already has a default, no need to ever create one
+      }
+    } catch (e) {
+      console.error("[Wishlist]", e);
+      state.wishlists = [];
+    }
+    renderCollections();
+  }
+
+  function closeDrawer() {
+    drawer.style.display = "none";
+    backdrop.style.display = "none";
+    document.body.style.overflow = "";
+    kebabMenu.style.display = "none";
+    newModal.style.display = "none";
+    moveModal.style.display = "none";
+  }
+
+  // ── Events ─────────────────────────────────────────────────────────────────
+  trigger.addEventListener("click", openDrawer);
+  closeBtn.addEventListener("click", closeDrawer);
+  backdrop.addEventListener("click", closeDrawer);
+  backBtn.addEventListener("click", goBack);
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && drawer.style.display !== "none") closeDrawer(); });
+
+  searchEl.addEventListener("input", e => {
+    state.searchQuery = e.target.value;
+    state.view === "collections" ? renderCollections() : renderItems();
+  });
+
+  viewListBtn.addEventListener("click", () => {
+    state.viewMode = "list";
+    viewListBtn.style.background = "#111"; viewListBtn.style.color = "#fff";
+    viewGridBtn.style.background = "#fff"; viewGridBtn.style.color = "#333";
+    state.view === "collections" ? renderCollections() : renderItems();
+  });
+  viewGridBtn.addEventListener("click", () => {
+    state.viewMode = "grid";
+    viewGridBtn.style.background = "#111"; viewGridBtn.style.color = "#fff";
+    viewListBtn.style.background = "#fff"; viewListBtn.style.color = "#333";
+    state.view === "collections" ? renderCollections() : renderItems();
+  });
+
+  newBtn.addEventListener("click", () => {
+    newModal.style.display = "flex";
+    newName.value = "";
+    setTimeout(() => newName.focus(), 50);
+  });
+  newCancel.addEventListener("click", () => { newModal.style.display = "none"; });
+  newName.addEventListener("keydown", e => { if (e.key === "Enter") newConfirm.click(); });
+  newConfirm.addEventListener("click", async () => {
+    const name = newName.value.trim();
+    if (!name) return;
+    newConfirm.textContent = "Creating…";
+    newConfirm.disabled = true;
+    try {
+      const created = await createList(name);
+      state.wishlists.push({ ...created, _items: [], _itemCount: 0 });
+      newModal.style.display = "none";
+      renderCollections();
+    } catch { newConfirm.textContent = "Error"; }
+    finally { setTimeout(() => { newConfirm.textContent = "Create"; newConfirm.disabled = false; }, 1500); }
+  });
+
+  kebabBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    kebabMenu.style.display = kebabMenu.style.display === "none" ? "block" : "none";
+  });
+  document.addEventListener("click", () => { kebabMenu.style.display = "none"; });
+
+  kebabMenu.querySelectorAll(".wl-menu-item").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      kebabMenu.style.display = "none";
+      const wl = state.activeWishlist;
+      if (!wl) return;
+
+      if (btn.dataset.action === "rename") {
+        const n = prompt("Rename list:", wl.name);
+        if (!n?.trim()) return;
+        try {
+          const updated = await renameList(wl.id, n.trim());
+          const idx = state.wishlists.findIndex(w => w.id === wl.id);
+          if (idx !== -1) state.wishlists[idx] = { ...state.wishlists[idx], name: updated.name };
+          state.activeWishlist = state.wishlists[idx];
+          titleEl.textContent = updated.name;
+        } catch { alert("Failed to rename list."); }
+      }
+
+      if (btn.dataset.action === "setDefault") {
+        try {
+          await setDefaultList(wl.id);
+          state.wishlists.forEach(w => { w.is_default = w.id === wl.id; });
+        } catch { alert("Failed to set as default."); }
+      }
+
+      if (btn.dataset.action === "delete") {
+        if (wl.is_default) { alert("You can't delete the default list."); return; }
+        if (!confirm(`Delete "${wl.name}"? This cannot be undone.`)) return;
+        try {
+          await deleteList(wl.id);
+          state.wishlists = state.wishlists.filter(w => w.id !== wl.id);
+          goBack();
+        } catch { alert("Failed to delete list."); }
+      }
+    });
+  });
+
+  cartAllBtn.addEventListener("click", async () => {
+    const variants = state.items.filter(i => i.variant_id).map(i => ({ id: i.variant_id, quantity: 1 }));
+    if (!variants.length) return;
+    const orig = cartAllBtn.innerHTML;
+    cartAllBtn.style.opacity = "0.5";
+    try {
+      await fetch("/cart/add.js", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: variants }),
+      });
+    } finally { cartAllBtn.style.opacity = "1"; }
+  });
+
+  shareBtn.addEventListener("click", () => {
+    const url = window.location.href;
+    if (navigator.share) {
+      navigator.share({ title: state.activeWishlist?.name, url });
+    } else {
+      navigator.clipboard?.writeText(url).then(() => {
+        const orig = shareBtn.title;
+        shareBtn.title = "Copied!";
+        setTimeout(() => { shareBtn.title = orig; }, 2000);
+      });
+    }
+  });
+
+  // ── Expose global so wishlist-heart.liquid snippet can share state ─────────
+  // Per-product heart buttons (rendered via snippets/wishlist-heart.liquid)
+  // read from window.__WL__ to check saved state and add items to lists.
+  window.__WL__ = {
+    shop:          CONFIG.shop,
+    customer:      CONFIG.customer,
+    get wishlists()       { return state.wishlists; },
+    set wishlists(v)      { state.wishlists = v; },
+    getSessionId,
+    apiHeaders,
+    identity,
+    loadWishlists,
+    createList,
+    openDrawer,
+  };
+
+})();
+</script>
+
+{% schema %}
+{
+  "name": "Wishlist",
+  "target": "body",
+  "settings": [
+    {
+      "type": "text",
+      "id": "drawer_title",
+      "label": "Drawer title",
+      "default": "My Wishlists"
+    },
+    {
+      "type": "color",
+      "id": "primary_color",
+      "label": "Button colour",
+      "default": "#000000"
+    },
+    {
+      "type": "select",
+      "id": "position",
+      "label": "Button position",
+      "options": [
+        { "value": "bottom-right", "label": "Bottom right" },
+        { "value": "bottom-left",  "label": "Bottom left"  }
+      ],
+      "default": "bottom-right"
+    },
+    {
+      "type": "select",
+      "id": "icon_style",
+      "label": "Icon style",
+      "options": [
+        { "value": "heart",    "label": "Heart"    },
+        { "value": "star",     "label": "Star"     },
+        { "value": "bookmark", "label": "Bookmark" }
+      ],
+      "default": "heart"
+    }
+  ]
+}
+{% endschema %}

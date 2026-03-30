@@ -1,0 +1,298 @@
+{% comment %}
+  snippets/wishlist-heart.liquid
+
+  Renders a ♡ / ♥ heart button next to Add to Cart on product pages.
+  Drop this into your theme's product template with:
+    {% render 'wishlist-heart', product: product %}
+
+  The button:
+    - Shows outline heart  (⬜ not saved)
+    - Shows filled heart   (🔴 saved) if the product is already in any list
+    - On click: opens the wishlist drawer AND shows a list-picker toast so
+      the customer can choose which list to add it to
+
+  This works alongside the floating wishlist trigger button — both share
+  the same global state & drawer defined in wishlist.liquid (app block).
+
+  Requirements:
+    • The Wishlist app block must be added to the theme (provides the drawer
+      and the global WL object this snippet reads from)
+    • product.id and product.selected_or_first_available_variant are used
+{% endcomment %}
+
+{% assign wl_product_id = product.id | prepend: 'gid://shopify/Product/' %}
+{% assign wl_variant_id = product.selected_or_first_available_variant.id | prepend: 'gid://shopify/ProductVariant/' %}
+{% assign wl_price = product.selected_or_first_available_variant.price | divided_by: 100.0 %}
+{% assign wl_image = product.featured_image | img_url: '400x400' %}
+
+<button
+  id="wl-heart-{{ product.id }}"
+  class="wl-product-heart"
+  aria-label="Save to wishlist"
+  data-product-id="{{ wl_product_id | escape }}"
+  data-variant-id="{{ wl_variant_id | escape }}"
+  data-product-title="{{ product.title | escape }}"
+  data-product-image="{{ wl_image | escape }}"
+  data-product-price="{{ wl_price }}"
+  style="
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 16px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+    color: #333;
+    transition: border-color 0.15s, color 0.15s;
+  "
+>
+  <svg class="wl-heart-outline" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;">
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+  </svg>
+  <svg class="wl-heart-filled" width="18" height="18" viewBox="0 0 24 24" fill="#e53e3e" stroke="#e53e3e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+  </svg>
+  <span class="wl-heart-label">Save</span>
+</button>
+
+<!-- List picker popup (appears anchored to this button) -->
+<div
+  id="wl-picker-{{ product.id }}"
+  class="wl-list-picker"
+  data-for="{{ product.id }}"
+  style="
+    display: none;
+    position: absolute;
+    z-index: 9997;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.14);
+    min-width: 220px;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  "
+>
+  <div style="padding: 12px 14px 8px; border-bottom: 1px solid #f0f0f0; display:flex; align-items:center; justify-content:space-between;">
+    <span style="font-size:13px;font-weight:600;color:#111;">Add to list</span>
+    <button class="wl-picker-close" style="background:none;border:none;cursor:pointer;padding:2px;color:#888;display:flex;align-items:center;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="wl-picker-lists" style="max-height: 200px; overflow-y: auto; padding: 6px 0;"></div>
+  <div style="padding:8px 14px 12px; border-top:1px solid #f0f0f0;">
+    <button class="wl-picker-new" style="
+      width:100%; text-align:left; padding:7px 0;
+      background:none; border:none; cursor:pointer;
+      font-size:13px; color:#555; font-family:inherit;
+      display:flex; align-items:center; gap:6px;
+    ">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      New list
+    </button>
+  </div>
+</div>
+
+<style>
+  .wl-product-heart:hover { border-color: #e53e3e; color: #e53e3e; }
+  .wl-product-heart.wl-saved { border-color: #e53e3e; color: #e53e3e; }
+  .wl-picker-lists button {
+    width: 100%; text-align: left; padding: 9px 14px;
+    background: none; border: none; cursor: pointer;
+    font-size: 13px; color: #111; font-family: inherit;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .wl-picker-lists button:hover { background: #f8f8f8; }
+  .wl-picker-lists button.wl-in-list { color: #e53e3e; font-weight: 500; }
+</style>
+
+<script>
+(function () {
+  const btn = document.getElementById("wl-heart-{{ product.id }}");
+  const picker = document.getElementById("wl-picker-{{ product.id }}");
+  if (!btn || !picker) return;
+
+  const pickerLists = picker.querySelector(".wl-picker-lists");
+  const pickerNew = picker.querySelector(".wl-picker-new");
+  const pickerClose = picker.querySelector(".wl-picker-close");
+
+  const ITEM = {
+    product_id:    btn.dataset.productId,
+    variant_id:    btn.dataset.variantId,
+    product_title: btn.dataset.productTitle,
+    product_image: btn.dataset.productImage,
+    product_price: parseFloat(btn.dataset.productPrice || "0") || null,
+  };
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  // Track which list IDs contain this product
+  const savedInLists = new Set();
+
+  function setVisualState() {
+    const saved = savedInLists.size > 0;
+    const outline = btn.querySelector(".wl-heart-outline");
+    const filled = btn.querySelector(".wl-heart-filled");
+    const label = btn.querySelector(".wl-heart-label");
+    if (saved) {
+      btn.classList.add("wl-saved");
+      outline.style.display = "none";
+      filled.style.display = "block";
+      label.textContent = "Saved";
+    } else {
+      btn.classList.remove("wl-saved");
+      outline.style.display = "block";
+      filled.style.display = "none";
+      label.textContent = "Save";
+    }
+  }
+
+  // ── Wait for the app block's WL global to be ready ────────────────────────
+  function getWL() {
+    // The app block exposes a global WL object with { wishlists, apiHeaders, identity }
+    return window.__WL__;
+  }
+
+  // ── Check saved state on load ─────────────────────────────────────────────
+  async function checkSavedState() {
+    const wl = getWL();
+    if (!wl) return;
+    const p = new URLSearchParams({
+      shop: wl.shop,
+      productId: ITEM.product_id,
+    });
+    if (wl.customer) p.set("customerId", wl.customer);
+    else { const s = wl.getSessionId(); if (s) p.set("sessionId", s); }
+    try {
+      const res = await fetch(`/apps/wishlist-api/api/widget/items/check?${p}`, {
+        headers: wl.apiHeaders(),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.inWishlist) {
+        // We don't know which list(s) yet — mark generically
+        savedInLists.add("unknown");
+      }
+      setVisualState();
+    } catch { /* network error, silent fail */ }
+  }
+
+  // ── Open picker ────────────────────────────────────────────────────────────
+  async function openPicker() {
+    const wl = getWL();
+    if (!wl) {
+      // App block not loaded yet — fall back to opening the drawer
+      const trigger = document.getElementById("wl-trigger");
+      if (trigger) trigger.click();
+      return;
+    }
+
+    // Position picker relative to button
+    const rect = btn.getBoundingClientRect();
+    picker.style.display = "block";
+    picker.style.top = (rect.bottom + window.scrollY + 6) + "px";
+    picker.style.left = rect.left + "px";
+
+    // Populate list items
+    pickerLists.innerHTML = `<div style="padding:10px 14px;font-size:12px;color:#aaa;">Loading…</div>`;
+
+    let lists = wl.wishlists;
+    if (!lists || !lists.length) {
+      try {
+        lists = await wl.loadWishlists();
+        wl.wishlists = lists;
+      } catch { lists = []; }
+    }
+
+    if (!lists.length) {
+      // Auto-create default
+      try {
+        const def = await wl.createList("My Favourites");
+        lists = [def];
+        wl.wishlists = lists;
+      } catch {}
+    }
+
+    pickerLists.innerHTML = lists.map(l => {
+      const inList = savedInLists.has(l.id);
+      return `<button data-list-id="${l.id}" class="${inList ? "wl-in-list" : ""}">
+        ${inList
+          ? `<svg width="13" height="13" viewBox="0 0 24 24" fill="#e53e3e" stroke="#e53e3e" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`
+          : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`}
+        ${l.name}${l.is_default ? " (default)" : ""}
+      </button>`;
+    }).join("");
+
+    pickerLists.querySelectorAll("[data-list-id]").forEach(listBtn => {
+      listBtn.addEventListener("click", () => addToList(Number(listBtn.dataset.listId)));
+    });
+  }
+
+  async function addToList(listId) {
+    const wl = getWL();
+    if (!wl) return;
+    try {
+      await fetch(`/apps/wishlist-api/api/widget/wishlists/${listId}/items`, {
+        method: "POST",
+        headers: wl.apiHeaders(),
+        body: JSON.stringify({ ...wl.identity(), ...ITEM }),
+      });
+      savedInLists.add(listId);
+      savedInLists.delete("unknown");
+      setVisualState();
+      picker.style.display = "none";
+
+      // Show a brief "Saved!" toast
+      showToast("Saved to " + (wl.wishlists.find(l => l.id === listId)?.name || "list") + " ✓");
+    } catch {
+      showToast("Could not save — try again");
+    }
+  }
+
+  function showToast(msg) {
+    let toast = document.getElementById("wl-toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "wl-toast";
+      toast.style.cssText = "position:fixed;bottom:88px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:9px 18px;border-radius:20px;font-size:13px;font-family:inherit;z-index:10002;pointer-events:none;opacity:0;transition:opacity 0.2s;";
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.opacity = "1";
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.opacity = "0"; }, 2500);
+  }
+
+  function closePicker() { picker.style.display = "none"; }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (picker.style.display === "none") openPicker();
+    else closePicker();
+  });
+
+  pickerClose.addEventListener("click", closePicker);
+  pickerNew.addEventListener("click", async () => {
+    closePicker();
+    // Delegate to the drawer's new-list flow
+    const newBtn = document.getElementById("wl-new-btn");
+    const drawerTrigger = document.getElementById("wl-trigger");
+    if (drawerTrigger) drawerTrigger.click();
+    setTimeout(() => { if (newBtn) newBtn.click(); }, 350);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!picker.contains(e.target) && e.target !== btn) closePicker();
+  });
+
+  // Initial saved-state check (once WL global is available)
+  function tryCheck() {
+    if (getWL()) { checkSavedState(); }
+    else { setTimeout(tryCheck, 200); }
+  }
+  tryCheck();
+})();
+</script>
